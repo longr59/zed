@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use editor::actions::MoveUp;
 use editor::{Editor, EditorElement, EditorEvent, EditorStyle};
+use feature_flags::FeatureFlagAppExt;
 use fs::Fs;
 use gpui::{
     pulsating_between, Animation, AnimationExt, App, DismissEvent, Entity, Focusable, Subscription,
     TextStyle, WeakEntity,
 };
-use language_model::LanguageModelRegistry;
+use language_model::{LanguageModelRegistry, Role};
 use rope::Point;
 use settings::Settings;
 use std::time::Duration;
@@ -38,6 +39,7 @@ pub struct MessageEditor {
     inline_context_picker_menu_handle: PopoverMenuHandle<ContextPicker>,
     model_selector: Entity<AssistantModelSelector>,
     use_tools: bool,
+    agentic_mode: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -108,6 +110,7 @@ impl MessageEditor {
             model_selector: cx
                 .new(|cx| AssistantModelSelector::new(fs, editor.focus_handle(cx), window, cx)),
             use_tools: false,
+            agentic_mode: false,
             _subscriptions: subscriptions,
         }
     }
@@ -181,15 +184,54 @@ impl MessageEditor {
         let thread = self.thread.clone();
         let context_store = self.context_store.clone();
         let use_tools = self.use_tools;
-        cx.spawn(move |_, mut cx| async move {
+        let agentic_mode = self.agentic_mode;
+        cx.spawn_in(window, move |this, mut cx| async move {
             refresh_task.await;
-            thread
+            let message_done = thread
                 .update(&mut cx, |thread, cx| {
+                    if agentic_mode {
+                        // todo! We'll probably want the initial system prompt specify a lot more
+                        // about the task of generating Lua code.
+
+                        // Since the value of `agentic_mode` may vary during a thread, this system
+                        // prompt is provided for each message when `agentic_mode == true`.
+                        thread.insert_message(
+                            Role::System,
+                            "You are an expert software engineer tasked with generating a Lua script. \
+                            Do not include any other info, only output a Lua script to accomplish the \
+                            following request:",
+                            cx,
+                        );
+                    }
                     let context = context_store.read(cx).snapshot(cx).collect::<Vec<_>>();
                     thread.insert_user_message(user_message, context, cx);
-                    thread.send_to_model(model, request_kind, use_tools, cx);
+                    let message_done =
+                        thread.send_to_model(model, request_kind, use_tools, cx);
+                    message_done
                 })
                 .ok();
+            let Some(message_done) = message_done else {
+                return;
+            };
+            let Ok(message_id) = message_done.await else {
+                return;
+            };
+            let Ok(Some(interpreter_input)) = thread.update(&mut cx, |thread, _| thread.message(message_id).map(|message| message.text.clone())) else {
+                return;
+            };
+            let interpreter_output = "todo! - interpreter response";
+            // There isn't currently UI for human-in-the-loop (interrupting the agentic loop or
+            // confirming / accepting it). The model also doesn't have a way to indicate the desire
+            // to halt. So, for now the message editor is updated with the interpreter output and
+            // sending that message is user confirmation of the agentic loop.
+            //
+            // todo! Not good to replace the message editor content as that can replace unsubmitted
+            // user input.
+            this.update_in(&mut cx, |this, window, cx| {
+                this.editor.update(cx, |editor, cx| {
+                    editor.set_text(interpreter_output, window, cx);
+                });
+            }).ok();
         })
         .detach();
     }
@@ -358,21 +400,41 @@ impl Render for MessageEditor {
                         h_flex()
                             .justify_between()
                             .child(
-                                Switch::new("use-tools", self.use_tools.into())
-                                    .label("Tools")
-                                    .on_click(cx.listener(|this, selection, _window, _cx| {
-                                        this.use_tools = match selection {
-                                            ToggleState::Selected => true,
-                                            ToggleState::Unselected
-                                            | ToggleState::Indeterminate => false,
-                                        };
-                                    }))
-                                    .key_binding(KeyBinding::for_action_in(
-                                        &ChatMode,
-                                        &focus_handle,
-                                        window,
-                                        cx,
-                                    )),
+                                h_flex()
+                                    .child(
+                                        Switch::new("use-tools", self.use_tools.into())
+                                            .label("Tools")
+                                            .on_click(cx.listener(
+                                                |this, selection, _window, _cx| {
+                                                    this.use_tools = match selection {
+                                                        ToggleState::Selected => true,
+                                                        ToggleState::Unselected
+                                                        | ToggleState::Indeterminate => false,
+                                                    };
+                                                },
+                                            ))
+                                            .key_binding(KeyBinding::for_action_in(
+                                                &ChatMode,
+                                                &focus_handle,
+                                                window,
+                                                cx,
+                                            )),
+                                    )
+                                    .when(cx.is_staff(), |this| {
+                                        this.child(
+                                            Switch::new("agentic-mode", self.agentic_mode.into())
+                                                .label("Agentic mode")
+                                                .on_click(cx.listener(
+                                                    |this, selection, _window, _cx| {
+                                                        this.agentic_mode = match selection {
+                                                            ToggleState::Selected => true,
+                                                            ToggleState::Unselected
+                                                            | ToggleState::Indeterminate => false,
+                                                        };
+                                                    },
+                                                )),
+                                        )
+                                    }),
                             )
                             .child(h_flex().gap_1().child(self.model_selector.clone()).child(
                                 if is_streaming_completion {

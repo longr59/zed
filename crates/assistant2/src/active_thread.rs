@@ -279,7 +279,8 @@ impl ActiveThread {
                                 Vec::new(),
                                 cx,
                             );
-                            thread.send_to_model(model, RequestKind::Chat, true, cx);
+                            let _message_done =
+                                thread.send_to_model(model, RequestKind::Chat, true, cx);
                         });
                     }
                 }

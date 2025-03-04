@@ -4,6 +4,7 @@ use anyhow::Result;
 use assistant_tool::ToolWorkingSet;
 use chrono::{DateTime, Utc};
 use collections::{BTreeMap, HashMap, HashSet};
+use futures::channel::oneshot;
 use futures::StreamExt as _;
 use gpui::{App, Context, EventEmitter, SharedString, Task};
 use language_model::{
@@ -256,7 +257,7 @@ impl Thread {
         request_kind: RequestKind,
         use_tools: bool,
         cx: &mut Context<Self>,
-    ) {
+    ) -> oneshot::Receiver<MessageId> {
         let mut request = self.to_completion_request(request_kind, cx);
 
         if use_tools {
@@ -272,7 +273,7 @@ impl Thread {
                 .collect();
         }
 
-        self.stream_completion(request, model, cx);
+        self.stream_completion(request, model, cx)
     }
 
     pub fn to_completion_request(
@@ -352,8 +353,10 @@ impl Thread {
         request: LanguageModelRequest,
         model: Arc<dyn LanguageModel>,
         cx: &mut Context<Self>,
-    ) {
+    ) -> oneshot::Receiver<MessageId> {
         let pending_completion_id = post_inc(&mut self.completion_count);
+
+        let (message_done_sender, message_done_receiver) = oneshot::channel();
 
         let task = cx.spawn(|thread, mut cx| async move {
             let stream = model.stream_completion(request, &cx);
@@ -432,8 +435,11 @@ impl Thread {
                         StopReason::ToolUse => {
                             cx.emit(ThreadEvent::UsePendingTools);
                         }
-                        StopReason::EndTurn => {}
-                        StopReason::MaxTokens => {}
+                        StopReason::EndTurn | StopReason::MaxTokens => {
+                            if let Some(Message { id, .. }) = thread.messages.last() {
+                                message_done_sender.send(*id).ok();
+                            }
+                        }
                     },
                     Err(error) => {
                         if error.is::<PaymentRequiredError>() {
@@ -461,6 +467,8 @@ impl Thread {
             id: pending_completion_id,
             _task: task,
         });
+
+        message_done_receiver
     }
 
     pub fn summarize(&mut self, cx: &mut Context<Self>) {

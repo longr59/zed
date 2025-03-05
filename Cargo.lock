@@ -16976,6 +16976,7 @@ dependencies = [
  "repl",
  "reqwest_client",
  "rope",
+ "rustls-platform-verifier",
  "scripting_tool",
  "search",
  "serde",

@@ -98,6 +98,7 @@ remote.workspace = true
 repl.workspace = true
 reqwest_client.workspace = true
 rope.workspace = true
+rustls-platform-verifier = "=0.5.0"
 scripting_tool.workspace = true
 search.workspace = true
 serde.workspace = true
